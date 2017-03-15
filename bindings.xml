@@ -62,12 +62,12 @@
           this.checked = tab.selected;
 
           if (tab.hasAttribute('progress') && tab.hasAttribute('busy')) {
-            this.setAttribute('image', 'chrome://browser/skin/tabbrowser/loading.png');
+            this.setAttribute('image', 'chrome://global/skin/icons/loading.png');
           } else if (this.tab.hasAttribute('busy')) {
             this.setAttribute('image', 'chrome://browser/skin/tabbrowser/connecting.png');
           } else {
             // See bootstrap.js -> "view.getImageSrc" for more comments about the following line:
-            this.setAttribute('image', (tab.image ? tab.linkedBrowser.mIconURL + "#-moz-resolution=16,16" : this._browser.mFaviconService.defaultFavicon.spec));
+            this.setAttribute('image', (tab.image ? tab.linkedBrowser.mIconURL + "#-moz-resolution=16,16" : "chrome://mozapps/skin/places/defaultFavicon.png"));
           }
 
           [

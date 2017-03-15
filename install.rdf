@@ -7,7 +7,7 @@
      xmlns:em="http://www.mozilla.org/2004/em-rdf#">
   <Description about="urn:mozilla:install-manifest">
     <em:id>TabsTree@traxium</em:id>
-    <em:version>1.4.6</em:version>
+    <em:version>1.4.9</em:version>
     <em:name>Tab Tree</em:name>
     <em:description>Tabs how they must be.</em:description>
     <em:creator>Sergey Zelentsov</em:creator>
@@ -20,7 +20,7 @@
         <!-- Firefox -->
         <em:id>{ec8030f7-c20a-464f-9b0e-13a3a9e97384}</em:id>
         <em:minVersion>26.0</em:minVersion>
-        <em:maxVersion>48.0</em:maxVersion>
+        <em:maxVersion>51.0</em:maxVersion>
       </Description>
     </em:targetApplication>
     <!-- start localizing -->

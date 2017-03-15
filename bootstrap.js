@@ -343,7 +343,8 @@ var windowListener = {
 	onOpenWindow: function (aXULWindow) {
 		// In Gecko 7.0 nsIDOMWindow2 has been merged into nsIDOMWindow interface.
 		// In Gecko 8.0 nsIDOMStorageWindow and nsIDOMWindowInternal have been merged into nsIDOMWindow interface.
-		let aDOMWindow = aXULWindow.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindowInternal || Ci.nsIDOMWindow);
+		// Since ≈FF50 "Use of nsIDOMWindowInternal is deprecated. Use nsIDOMWindow instead."
+		let aDOMWindow = aXULWindow.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindow);
 		aDOMWindow.addEventListener('tt-TabsLoad', function onTabsLoad(event) {
 			aDOMWindow.removeEventListener('tt-TabsLoad', onTabsLoad, false);
 			
@@ -354,7 +355,8 @@ var windowListener = {
 	onCloseWindow: function (aXULWindow) {
 		// In Gecko 7.0 nsIDOMWindow2 has been merged into nsIDOMWindow interface.
 		// In Gecko 8.0 nsIDOMStorageWindow and nsIDOMWindowInternal have been merged into nsIDOMWindow interface.
-		let aDOMWindow = aXULWindow.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindowInternal || Ci.nsIDOMWindow);
+		// Since ≈FF50 "Use of nsIDOMWindowInternal is deprecated. Use nsIDOMWindow instead."
+		let aDOMWindow = aXULWindow.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindow);
 		if (!aDOMWindow) {
 			return;
 		}
@@ -382,7 +384,7 @@ var windowListener = {
 		let XULWindows = Services.wm.getXULWindowEnumerator(null);
 		while (XULWindows.hasMoreElements()) {
 			let aXULWindow = XULWindows.getNext();
-			let aDOMWindow = aXULWindow.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindowInternal || Ci.nsIDOMWindow);
+			let aDOMWindow = aXULWindow.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindow);
 			windowListener.loadIntoWindow(aDOMWindow);
 		}
 		// Listen to new windows
@@ -394,7 +396,7 @@ var windowListener = {
 		let XULWindows = Services.wm.getXULWindowEnumerator(null);
 		while (XULWindows.hasMoreElements()) {
 			let aXULWindow = XULWindows.getNext();
-			let aDOMWindow = aXULWindow.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindowInternal || Ci.nsIDOMWindow);
+			let aDOMWindow = aXULWindow.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindow);
 			windowListener.unloadFromWindow(aDOMWindow, aXULWindow);
 		}
 		//Stop listening so future added windows don't get this attached
@@ -451,6 +453,9 @@ var windowListener = {
 		Object.keys(aDOMWindow.tt.toRestore.g).forEach( (x)=>{aDOMWindow.gBrowser[x] = aDOMWindow.tt.toRestore.g[x];} );
 		// only 1 at the moment - 'updateContextMenu':
 		Object.keys(aDOMWindow.tt.toRestore.TabContextMenu).forEach( (x)=>{aDOMWindow.TabContextMenu[x] = aDOMWindow.tt.toRestore.TabContextMenu[x];} );
+		if (aDOMWindow.updateTitlebarDisplay) {
+			aDOMWindow.updateTitlebarDisplay = aDOMWindow.tt.toRestore.updateTitlebarDisplay;
+		}
 		aDOMWindow.gBrowser.tabContainer.removeEventListener("TabMove", aDOMWindow.tt.toRemove.eventListeners.onTabMove, false);
 		aDOMWindow.gBrowser.tabContainer.removeEventListener("TabSelect", aDOMWindow.tt.toRemove.eventListeners.onTabSelect, false);
 		aDOMWindow.gBrowser.tabContainer.removeEventListener("TabAttrModified", aDOMWindow.tt.toRemove.eventListeners.onTabAttrModified, false);
@@ -538,10 +543,37 @@ var windowListener = {
 		
 		// remember 'tabsintitlebar' attr before beginning to interact with it // default is 'true':
 		aDOMWindow.tt.toRestore.tabsintitlebar = aDOMWindow.document.documentElement.getAttribute('tabsintitlebar')=='true';
-
+		
+		//////////////// Utility Functions (used in multiple areas) ///////////
+		let openNewSibling = function (sibling) {
+			let tPos = sibling._tPos;
+			let lvl = ss.getTabValue(sibling, "ttLevel");
+			let newTab = g.addTab("about:newtab"); // our new tab will be opened at position g.tabs.length - 1
+			for (let i = tPos + 1; i < g.tabs.length - 1; ++i) {
+				if (parseInt(ss.getTabValue(g.tabs[i], "ttLevel")) <= parseInt(lvl)) {
+					g.moveTabTo(newTab, i);
+					break;
+				}
+			}
+			ss.setTabValue(newTab, "ttLevel", lvl);
+			g.selectedTab = newTab;
+		};
+		
+		let openNewChild = function (parent) {
+			let lvl = ss.getTabValue(parent, "ttLevel");
+			let newTab = g.addTab("about:newtab"); // our new tab will be opened at position g.tabs.length - 1
+			if (Services.prefs.getBoolPref("extensions.tabtree.insertRelatedAfterCurrent")) {
+				g.moveTabTo(newTab, parent._tPos + 1);
+			} else {
+				g.moveTabTo(newTab, tt.lastDescendantPos(parent) + 1);
+			}
+			ss.setTabValue(newTab, "ttLevel", (parseInt(lvl) + 1).toString());
+			g.selectedTab = newTab;
+		};
+		
 		//////////////////// TITLE BAR STANDARD BUTTONS (Minimize, Restore/Maximize, Close) ////////////////////////////
 		// We can't use 'window.load' event here, because it always shows windowState==='STATE_NORMAL' even when the actual state is 'STATE_MAXIMIZED'
-
+		
 		// Now we have elements with the same id:
 		let titlebarButtons = aDOMWindow.document.querySelector('#titlebar-buttonbox-container'); // it's present only on Windows and Mac
 		let titlebarButtonsClone;
@@ -559,7 +591,30 @@ var windowListener = {
 		let slimSpacer = aDOMWindow.document.createElement('spacer');
 		slimSpacer.id = 'tt-slimChrome-spacer';
 		slimSpacer.setAttribute('flex', '1');
-
+		
+		if (aDOMWindow.updateTitlebarDisplay) {
+			// #136 [Bug] UI breaks with Firefox 47
+			// More info at https://dxr.mozilla.org/mozilla-central/source/browser/base/content/browser-tabsintitlebar.js
+			aDOMWindow.tt.toRestore.updateTitlebarDisplay = aDOMWindow.updateTitlebarDisplay;
+			aDOMWindow.updateTitlebarDisplay = new Proxy(aDOMWindow.updateTitlebarDisplay, {
+				apply: function(target, thisArg, argumentsList) {
+					target.apply(thisArg, argumentsList);
+					if (aDOMWindow.windowState === aDOMWindow.STATE_NORMAL) {
+						// #154 [Bug] Broken compatibility with Hide Caption Titlebar Plus since version 1.4.7
+						AddonManager.getAddonByID("hidecaptionplus-dp@dummy.addons.mozilla.org", function (addon) {
+							if (addon && addon.isActive) {
+								// "Hide Caption Titlebar Plus" is installed and enabled
+							} else {
+								aDOMWindow.document.documentElement.removeAttribute("chromemargin");
+							}
+						});
+					}
+				}
+			});
+		}
+		
+		// console.log(`Window: '${aDOMWindow.document.title} (${g.tabs.length})' (windowState=${aDOMWindow.windowState}). Injecting Tab Tree ...`);
+		
 		if (Services.appinfo.OS == 'WINNT') {
 			switch (aDOMWindow.windowState) {
 				case aDOMWindow.STATE_MAXIMIZED:
@@ -598,6 +653,7 @@ var windowListener = {
 			}
 
 			aDOMWindow.addEventListener('sizemodechange', (aDOMWindow.tt.toRemove.eventListeners.onSizemodechange = function(event) {
+				// console.log(`Window: '${aDOMWindow.document.title} (${g.tabs.length})' (windowState=${aDOMWindow.windowState}). Event: 'sizemodechange'`);
 				switch (aDOMWindow.windowState) {
 					case aDOMWindow.STATE_MAXIMIZED:
 						if (windowControlsClone.parentNode !== null) { // if windowControlsClone exists
@@ -621,8 +677,10 @@ var windowListener = {
 								// END Beyond Australis compatibility
 								
 								titlebarButtons.style.marginRight = '-9999px'; // Beyond Australis compatibility
-								aDOMWindow.document.documentElement.setAttribute("tabsintitlebar", "true"); // hide native titlebar
-								aDOMWindow.updateTitlebarDisplay();
+								aDOMWindow.setTimeout(() => {
+									aDOMWindow.document.documentElement.setAttribute("tabsintitlebar", "true"); // hide native titlebar
+									aDOMWindow.updateTitlebarDisplay();
+								}, 0);
 							}
 						}
 						break;
@@ -1118,7 +1176,21 @@ var windowListener = {
 			let helper = keyboardHelper(keyboardEvent);
 			if (keyboardEvent.ctrlKey && keyboardEvent.altKey && keyboardEvent.shiftKey && helper.testCode('KeyF', 'f')) {
 				quickSearchBox.collapsed = false;
-				quickSearchBox.focus();
+				// #172
+				let loop = function () {
+					quickSearchBox.focus();
+					if (
+						aDOMWindow.document.activeElement
+						&& aDOMWindow.document.activeElement.parentElement
+						&& aDOMWindow.document.activeElement.parentElement.parentElement === quickSearchBox
+					) {
+						// focused
+					} else {
+						console.log("@#@#@#@#");
+						aDOMWindow.setTimeout(loop, 20);
+					}
+				};
+				loop();
 			} else if (keyboardEvent.ctrlKey && keyboardEvent.altKey && keyboardEvent.shiftKey && helper.testKey('PageDown', 'pagedown')) {
 				// #68 Ctrl+Alt+Shift+PageDown - slow moving speed:
 				let tab = g.mCurrentTab;
@@ -1265,18 +1337,24 @@ var windowListener = {
 						break;
 					}
 				}
+			} else if ((keyboardEvent.shiftKey && keyboardEvent.altKey && helper.testKey('I', 'i'))) {
+				let tab = g.mCurrentTab;
+				openNewSibling(tab);
+			} else if ((keyboardEvent.shiftKey && keyboardEvent.altKey && helper.testKey("O", "o"))) {
+				let tab = g.mCurrentTab;
+				openNewChild(tab);
 			}
 		}), false);
-
+		
 		aDOMWindow.tt.toRemove.eventListeners.onAppcontentMouseUp = function() {
 			quickSearchBox.collapsed = true;
 		};
-
+		
 		if (Services.prefs.getBoolPref('extensions.tabtree.search-autohide')) {
 			appcontent.addEventListener('mouseup', aDOMWindow.tt.toRemove.eventListeners.onAppcontentMouseUp, false); // don't forget to remove
 		}
 		//////////////////// END KEY ///////////////////////////////////////////////////////////////////////////////////
-
+		
 //////////////////////////////// here we could load something before all tabs have been loaded and restored by SS ////////////////////////////////
 
 		let tt = {
@@ -1532,7 +1610,8 @@ var windowListener = {
 			
 			quickSearch: function(aText, tPos) {
 				// I assume that this method is never invoked with aText=''
-				let url = g.browsers[tPos]._userTypedValue || g.browsers[tPos].contentDocument.URL || '';
+				// g.browsers[tPos].contentDocument.URL doesn't work anymore because contentDocument is null
+				let url = g.browsers[tPos].documentURI.spec || g.browsers[tPos]._userTypedValue || '';
 				let txt = aText.toLowerCase();
 				if (g.tabs[tPos].label.toLowerCase().indexOf(txt)!=-1 || url.toLowerCase().indexOf(txt)!=-1) { // 'url.toLowerCase()' may be replaced by 'url'
 					return true;
@@ -1858,7 +1937,7 @@ var windowListener = {
 				) {
 					g.tabContainer.addEventListener('TabOpen', function onPreAddTabWithoutRef(event) {
 						g.tabContainer.removeEventListener('TabOpen', onPreAddTabWithoutRef, true);
-						if ( ss.getTabValue(event.target, 'ttLevel') === '' ) { // despite MDN it returns '' instead of undefined
+						if ( ss.getTabValue(event.target, 'ttLevel') === '' ) {
 							ss.setTabValue(event.target, 'ttLevel', '0');
 						}
 						tree.treeBoxObject.rowCountChanged(event.target._tPos-tt.nPinned, 1);
@@ -2015,7 +2094,8 @@ var windowListener = {
 				if (tab.image) {
 					return g.getIcon(tab) + "#-moz-resolution=16,16";
 				} else {
-					return g.mFaviconService.defaultFavicon.spec;
+					return "chrome://mozapps/skin/places/defaultFavicon.png";
+					// since about FF47 g.mFaviconService is undefined
 					// g.mFaviconService.defaultFavicon.spec is "chrome://mozapps/skin/places/defaultFavicon.png"
 					// Or we could return something like 'chrome://tabtree/skin/completelyTransparent.png'
 					// in that case it would look exactly like what Firefox does for its default tabs
@@ -2024,7 +2104,7 @@ var windowListener = {
 				// using animated png's causes abnormal CPU load (due to too frequent rows invalidating)
 				// and until this Firefox bug is fixed the following code will be commented out:
 				//if (g.tabs[tPos].hasAttribute('progress') && g.tabs[tPos].hasAttribute('busy')) {
-				//	return "chrome://browser/skin/tabbrowser/loading.png";
+				//	return "chrome://global/skin/icons/loading.png";
 				//} else if (g.tabs[tPos].hasAttribute('busy')) {
 				//	return "chrome://browser/skin/tabbrowser/connecting.png";
 				//}
@@ -2083,6 +2163,12 @@ var windowListener = {
 				}
 				if (prefUnread && tab.hasAttribute('unread')) {
 					ret += ' unread';
+				}
+				if (tab.hasAttribute('busy')) {
+					ret += ' busy'
+				}
+				if (tab.hasAttribute('progress')) {
+					ret += ' progress'
 				}
 				return ret;
 			},
@@ -2500,8 +2586,29 @@ var windowListener = {
 			tree.treeBoxObject.invalidate();
 		}, false);
 
-		tree.onkeydown = quickSearchBox.onkeydown = function(keyboardEvent) {
+		tree.onkeydown = function(keyboardEvent) {
 			if (keyboardEvent.key=='Escape') {
+				if (Services.prefs.getBoolPref('extensions.tabtree.search-autohide')) {
+					quickSearchBox.collapsed = true;
+				} else {
+					quickSearchBox.value = '';
+					tree.treeBoxObject.invalidate();
+				}
+			}
+		};
+
+		// <Enter> in quick search box = jump to first tab matching quick search
+		quickSearchBox.onkeydown = function(keyboardEvent) {
+			if (keyboardEvent.key=='Enter') {
+				for (let tPos = g._numPinnedTabs; tPos < g.tabs.length; ++tPos) {
+					if (tt.quickSearch(quickSearchBox.value, tPos)) {
+						g.selectTabAtIndex(tPos);
+						quickSearchBox.focus();
+						break;
+					}
+				}
+			}
+			if (keyboardEvent.key=='Enter' || keyboardEvent.key=='Escape') {
 				if (Services.prefs.getBoolPref('extensions.tabtree.search-autohide')) {
 					quickSearchBox.collapsed = true;
 				} else {
@@ -2635,7 +2742,7 @@ var windowListener = {
 				tree.treeBoxObject.getCellAt(event.clientX, event.clientY, row, col, {});
 				if  (row.value === -1) { // click the empty area
 					if (event.detail === 2) { // double click
-						aDOMWindow.BrowserOpenNewTabOrWindow(event);
+						aDOMWindow.openUILinkIn(aDOMWindow.BROWSER_NEW_TAB_URL, event.shiftKey ? "window" : "tab");
 					}
 				} else { // click a row
 					let tPos = row.value + tt.nPinned;
@@ -2669,7 +2776,7 @@ var windowListener = {
 				tree.treeBoxObject.getCellAt(event.clientX, event.clientY, row, col, {});
 				if  (row.value === -1) { // click the empty area
 					if (event.detail === 2) { // double click
-						aDOMWindow.BrowserOpenNewTabOrWindow(event);
+						aDOMWindow.openUILinkIn(aDOMWindow.BROWSER_NEW_TAB_URL, event.shiftKey ? "window" : "tab");
 					}
 				} else { // click a row
 					let tPos = row.value + tt.nPinned;
@@ -2731,7 +2838,7 @@ var windowListener = {
 		}
 		
 		newTab.addEventListener('command', function(event) {
-			aDOMWindow.BrowserOpenNewTabOrWindow(event);
+			aDOMWindow.openUILinkIn(aDOMWindow.BROWSER_NEW_TAB_URL, event.shiftKey ? "window" : "tab");
 		}, false);
 		
 		newTab.addEventListener("mouseup", function (event) {
@@ -2835,7 +2942,7 @@ var windowListener = {
 							aDOMWindow.undoCloseTab();
 							break;
 						default: // open a new tab (or a window)
-							aDOMWindow.BrowserOpenNewTabOrWindow(event);
+							aDOMWindow.openUILinkIn(aDOMWindow.BROWSER_NEW_TAB_URL, event.shiftKey ? "window" : "tab");
 					}
 				} else { // on a tab
 					let tPos = idx + tt.nPinned;
@@ -2928,39 +3035,21 @@ var windowListener = {
 			}
 			g.reloadTab(g.tabs[tPos]);
 		}, false);
-
+		
 		let menuItemOpenNewTabSibling = aDOMWindow.document.createElement("menuitem"); // removed in unloadFromWindow()
 		menuItemOpenNewTabSibling.id = "tt-content-open-sibling";
 		//menuItemOpenNewTabSibling.setAttribute("label", stringBundle.GetStringFromName("open_sibling"));
 		menuItemOpenNewTabSibling.addEventListener("command", function (event) {
 			let tab = aDOMWindow.TabContextMenu.contextTab;
-			let tPos = tab._tPos;
-			let lvl = ss.getTabValue(tab, "ttLevel");
-			let newTab = g.addTab("about:newtab"); // our new tab will be opened at position g.tabs.length - 1
-			for (let i = tPos + 1; i < g.tabs.length - 1; ++i) {
-				if (parseInt(ss.getTabValue(g.tabs[i], "ttLevel")) <= parseInt(lvl)) {
-					g.moveTabTo(newTab, i);
-					break;
-				}
-			}
-			ss.setTabValue(newTab, "ttLevel", lvl);
-			g.selectedTab = newTab;
+			openNewSibling(tab);
 		}, false);
-
+		
 		let menuItemOpenNewTabChild = aDOMWindow.document.createElement("menuitem"); // removed in unloadFromWindow()
 		menuItemOpenNewTabChild.id = "tt-content-open-child";
 		//menuItemOpenNewTabChild.setAttribute("label", stringBundle.GetStringFromName("open_child"));
 		menuItemOpenNewTabChild.addEventListener("command", function (event) {
 			let tab = aDOMWindow.TabContextMenu.contextTab;
-			let lvl = ss.getTabValue(tab, "ttLevel");
-			let newTab = g.addTab("about:newtab"); // our new tab will be opened at position g.tabs.length - 1
-			if (Services.prefs.getBoolPref("extensions.tabtree.insertRelatedAfterCurrent")) {
-				g.moveTabTo(newTab, tab._tPos + 1);
-			} else {
-				g.moveTabTo(newTab, tt.lastDescendantPos(tab) + 1);
-			}
-			ss.setTabValue(newTab, "ttLevel", (parseInt(lvl) + 1).toString());
-			g.selectedTab = newTab;
+			openNewChild(tab);
 		}, false);
 		
 		let menuItemDuplicateTabAsSibling = aDOMWindow.document.createElement("menuitem"); // removed in unloadFromWindow()
